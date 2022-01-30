@@ -1,0 +1,273 @@
+import sqlite3
+import time
+import matplotlib.pyplot as plt
+
+db_path = ""
+connection = None
+cursor = None
+UnOptimizedTimes = []
+SelfOptimizedTimes = []
+UserOptimizedTimes = []
+
+def connect(path):
+	global connection, cursor
+	connection = sqlite3.connect(path)
+	cursor = connection.cursor()
+
+def createUndefinedTables():
+	global connection, cursor
+	cursor.execute('''CREATE TABLE IF NOT EXISTS "Customers_undefined" ( 
+	"customer_id" TEXT,
+	"customer_postal_code" INTEGER
+	);''')
+	
+	cursor.execute('''INSERT INTO "Customers_undefined"
+	SELECT customer_id, customer_postal_code
+	FROM Customers
+	;''')
+	
+	cursor.execute('''CREATE TABLE IF NOT EXISTS "Orders_undefined" (
+	"order_id" TEXT,
+	"customer_id" TEXT
+	);''')
+
+	cursor.execute('''INSERT INTO "Orders_undefined"
+	SELECT order_id, customer_id
+	FROM Orders
+	;''')
+
+	cursor.execute('''CREATE TABLE IF NOT EXISTS "Orders_items_undefined" (
+		"order_id" TEXT,
+		"order_item_id" INTEGER,
+		"product_id" TEXT,
+		"seller_id" TEXT
+		);''' )
+	connection.commit()
+
+def dropUndefinedTables():
+	global connection, cursor
+	cursor.execute('''DROP TABLE IF EXISTS Customers_undefined;''')
+	cursor.execute('''DROP TABLE IF EXISTS Orders_undefined;''')
+	cursor.execute('''DROP TABLE IF EXISTS Orders_items_undefined''')
+	cursor.execute('''DROP VIEW IF EXISTS OrderSize''')
+	connection.commit()
+
+def createIndexes():
+	global connection, cursor
+	cursor.execute('CREATE INDEX IF NOT EXISTS idx_cust ON Customers(customer_postal_code, customer_id);')
+	cursor.execute('CREATE INDEX IF NOT EXISTS idx_order ON Orders(customer_id,order_id);')
+	#cursor.execute('CREATE INDEX IF NOT EXISTS idx_order_size ON OrderSize(oid);')
+	connection.commit()
+	
+def dropIndexes():
+	global connection, cursor
+	cursor.execute('DROP INDEX IF EXISTS idx_cust')
+	cursor.execute('DROP INDEX IF EXISTS idx_order')
+	cursor.execute('DROP INDEX IF EXISTS idx_order_size')
+	connection.commit()
+
+def queryUnoptimized(db_path): 
+	global connection, cursor, UnOptimizedTimes
+	connect(db_path)
+	
+	createUndefinedTables()
+	cursor.execute('PRAGMA automatic_index=OFF; ')
+	cursor.execute('PRAGMA foreign_keys=OFF; ')
+	connection.commit()
+	list_of_target_postal_codes = []
+	for i in range(50):
+		query = '''SELECT customer_postal_code
+		FROM Customers_undefined
+		ORDER BY RANDOM()
+		LIMIT 1;
+		'''
+		cursor.execute(query)
+		row = cursor.fetchall()
+		list_of_target_postal_codes.append(row[0][0])
+	
+	query = ''' CREATE VIEW IF NOT EXISTS OrderSize(oid, size)
+			AS SELECT O.order_id, COUNT(*)
+			FROM Orders O, Order_items O_items
+			WHERE O.order_id == O_items.order_id
+			GROUP BY O.order_id; '''
+	cursor.execute(query)
+	connection.commit()
+	start = time.time()
+	cursor.execute(query)
+	for i in range(50):
+		target_postal_code = list_of_target_postal_codes[i]
+		query = '''SELECT denom AS Total_number_of_orders, num / denom AS Average_number_of_items_per_order FROM( (
+			SELECT CAST (SUM(OS.size) AS REAL) AS num
+			FROM Customers_undefined C, Orders_undefined O, OrderSize OS
+			WHERE C.customer_postal_code = 3735 AND C.customer_id = O.customer_id AND O.order_id = OS.oid
+			),
+			(SELECT count() AS denom
+			FROM Orders_undefined o
+			WHERE o.customer_id IN(
+			SELECT c.customer_id
+			FROM Customers_undefined c
+			WHERE c.customer_postal_code = :target_code)));
+			'''
+		cursor.execute(query, {"target_code": target_postal_code})
+	end = time.time()
+	UnOptimizedTimes.append((end - start) * 1000)
+	dropUndefinedTables()
+	print((end - start)*1000)
+	connection.close()
+
+def querySelfOptimized(db_path): 
+	global connection, cursor, SelfOptimizedTimes
+	connect(db_path)
+	
+	cursor.execute('PRAGMA automatic_index=ON; ')
+	cursor.execute('PRAGMA foreign_keys=ON; ')
+	connection.commit()
+	list_of_target_postal_codes = []
+	for i in range(50):
+		query = '''SELECT customer_postal_code
+		FROM Customers
+		ORDER BY RANDOM()
+		LIMIT 1;
+		'''
+		cursor.execute(query)
+		row = cursor.fetchall()
+		list_of_target_postal_codes.append(row[0][0])
+	query = ''' CREATE VIEW IF NOT EXISTS OrderSize(oid, size)
+		AS SELECT O.order_id, COUNT(*)
+		FROM Orders O, Order_items O_items
+		WHERE O.order_id == O_items.order_id
+		GROUP BY O.order_id; '''
+	cursor.execute(query)
+	connection.commit()
+	start = time.time()
+	for i in range(50):
+		target_postal_code = list_of_target_postal_codes[i]
+		query = '''SELECT denom AS Total_number_of_orders, num / denom AS Average_number_of_items_per_order FROM( (
+			SELECT CAST (SUM(OS.size) AS REAL) AS num
+			FROM Customers C, Orders O, OrderSize OS
+			WHERE C.customer_postal_code = 3735 AND C.customer_id = O.customer_id AND O.order_id = OS.oid
+			),
+			(SELECT count() AS denom
+			FROM Orders o
+			WHERE o.customer_id IN(
+			SELECT c.customer_id
+			FROM Customers c
+			WHERE c.customer_postal_code = :target_code)));
+			'''
+		cursor.execute(query, {"target_code": target_postal_code})
+	end = time.time()
+	cursor.execute('''DROP VIEW IF EXISTS OrderSize''')
+	SelfOptimizedTimes.append((end - start) * 1000)
+	print((end - start) * 1000)
+	connection.close()
+
+def queryUserOptimized(db_path): 
+	global connection, cursor, UserOptimizedTimes
+	connect(db_path)
+	
+	cursor.execute('PRAGMA automatic_index=OFF; ')
+	cursor.execute('PRAGMA foreign_keys=ON; ')
+	connection.commit()
+	
+	list_of_target_postal_codes = []
+	for i in range(50):
+		query = '''SELECT customer_postal_code
+		FROM Customers
+		ORDER BY RANDOM()
+		LIMIT 1;
+		'''
+		cursor.execute(query)
+		row = cursor.fetchall()
+		list_of_target_postal_codes.append(row[0][0])
+	query = ''' CREATE VIEW IF NOT EXISTS OrderSize(oid, size)
+		AS SELECT O.order_id, COUNT(*)
+		FROM Orders O, Order_items O_items
+		WHERE O.order_id == O_items.order_id
+		GROUP BY O.order_id; '''
+	cursor.execute(query)
+	connection.commit()
+	createIndexes()
+	start = time.time()
+	for i in range(50):
+		target_postal_code = list_of_target_postal_codes[i]
+		query = '''SELECT denom AS Total_number_of_orders, num / denom AS Average_number_of_items_per_order FROM( (
+			SELECT CAST (SUM(OS.size) AS REAL) AS num
+			FROM Customers C, Orders O, OrderSize OS
+			WHERE C.customer_postal_code = 3735 AND C.customer_id = O.customer_id AND O.order_id = OS.oid
+			),
+			(SELECT count() AS denom
+			FROM Orders o
+			WHERE o.customer_id IN(
+			SELECT c.customer_id
+			FROM Customers c
+			WHERE c.customer_postal_code = :target_code)));
+			'''
+		cursor.execute(query, {"target_code": target_postal_code})
+	end = time.time()
+	cursor.execute('''DROP VIEW IF EXISTS OrderSize''')
+	UserOptimizedTimes.append((end - start) * 1000)
+	print((end - start)*1000)
+	dropIndexes()
+	connection.close()
+
+def createTable():
+	global UnOptimizedTimes, SelfOptimizedTimes, UserOptimizedTimes
+
+	BottomUserOptimized = []
+	for i in range(3):
+		BottomUserOptimized.append(UnOptimizedTimes[i] + SelfOptimizedTimes[i])
+
+	labels = ['SmallDB', 'MediumDB', 'LargeDB']
+	width = 0.75
+
+	fig, ax = plt.subplots()
+
+	ax.bar(labels, UnOptimizedTimes, width, label = "Unoptimized")
+	print(UnOptimizedTimes, SelfOptimizedTimes, UserOptimizedTimes)
+	ax.bar(labels, SelfOptimizedTimes, width, bottom = UnOptimizedTimes ,label = "Self-Optimized")
+	ax.bar(labels, UserOptimizedTimes, width, bottom = BottomUserOptimized, label = "User-Optimized")
+
+	ax.set_ylabel('Time (ms)')
+	ax.set_title('Query 2')
+	ax.legend()
+
+	plt.savefig('./Q2A3chart.png')
+
+def main():
+	global unoptimizedTimes, selfOptimizedTimes, userOptimizedTimes
+
+	db_path = './A3Small.db'
+	print("Small Unoptimized:")
+	queryUnoptimized(db_path)
+	print("Small Self Optimized:")
+	querySelfOptimized(db_path)
+	print("Small User Optimized:")
+	queryUserOptimized(db_path)
+
+	print("-----------------------")
+	
+	db_path = './A3Medium.db'
+	print("Medium Unoptimized:")
+	queryUnoptimized(db_path)
+	print("Medium Self Optimized:")
+	querySelfOptimized(db_path)
+	print("Medium User Optimized:")
+	queryUserOptimized(db_path)
+
+	print("-----------------------")
+
+	db_path = './A3Large.db'
+	print("Large Unoptimized:")
+	queryUnoptimized(db_path)
+	print("Large Self Optimized:")
+	querySelfOptimized(db_path)
+	print("Large User Optimized:")
+	queryUserOptimized(db_path)
+
+	print("-----------------------")
+	createTable()
+	
+if __name__ == "__main__":
+	main()
+	
+	
